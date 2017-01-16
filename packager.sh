@@ -3,6 +3,7 @@
 # Directories
 INSTALLDIR="/usr/local"
 BINDIR="$INSTALLDIR/bin"
+WEBROOT="/var/www"
 
 # Package lists
 WEBSRV=$(cat "websrv.list")
@@ -13,14 +14,6 @@ EXTRA=$(cat "drupal.list") $(cat "extra.list")
 # Colors
 YLW="\033[0;33m"
 GRY="\033[0;37m"
-
-package_install() {
-	echo "Installing necessary packages..."
-	echo "apt udate"
-	apt-get update
-	echo "installing packages";
-	apt-get install $WEBSRV $PHP $DB $EXTRA
-}
 
 # Composer is a handy way to install Drupal. The fastest for a fairly bare-bones install
 # is using: '
@@ -49,6 +42,24 @@ install_composer() {
 	echo "--stabilty=dev"
 	echo -n "${YLW}INFO${GRY}: alternatively, for a full commerce install, use the "
 	echo "'acromedia/drupalorange-project-template' project"
+}
+
+# strictly speaking, not actually configuring nginx (see: add-site.sh) but rather setting
+# up the root 'www' directory with correct permissions and ensuring user is added to
+# 'www-data' group. It is important that 'package_install()' is run first or this will likely
+# fail
+nginx_config() {
+	echo "Setting $WEBROOT ownership to root:www-data and adding $SUDO_USER to www-data"
+	chown "root:www-data $WEBROOT"
+	usermod -a -G "www-data" $SUDO_USER
+}
+
+package_install() {
+	echo "Installing necessary packages..."
+	echo "apt udate"
+	apt-get update
+	echo "installing packages";
+	apt-get install $WEBSRV $PHP $DB $EXTRA
 }
 
 php_config() {
@@ -101,8 +112,11 @@ case $1 in
 	"install") package_install ;;
 	"composer") install_composer ;;
 	"php") php_config ;;
+	"nginx") nginx_config ;;
 	"all")
 		package_install
+		nginx_config # must come after package_install
+		php_config
 		install_composer
 	;;
 	*) echo 'enter a command to execute or "all"' ;;
