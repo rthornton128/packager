@@ -17,7 +17,7 @@ GRY="\033[0;37m"
 
 # Composer is a handy way to install Drupal. The fastest for a fairly bare-bones install
 # is using: '
-install_composer() {
+composer_install() {
 	WGET=$(which "wget")
 	echo "Output=$WGET"
 	if [ ! $WGET ]; then
@@ -32,8 +32,8 @@ install_composer() {
 
 	echo "Installing composer..."
 	FILENAME="composer-setup.php"
-	wget -vO "$FILENAME" "http://getcomposer.org/installer"
-	php "$FILENAME" --install-dir="/usr/local/bin" --filename="composer"
+	$WGET -vO "$FILENAME" "http://getcomposer.org/installer"
+	$PHP "$FILENAME" --install-dir="/usr/local/bin" --filename="composer"
 	chmod +x "/usr/local/bin/composer"
 	rm -f "$FILENAME"
 
@@ -44,6 +44,16 @@ install_composer() {
 	echo "'acromedia/drupalorange-project-template' project"
 }
 
+composer_install_extra() {
+	# install the following php packages globally but not as root per composer warning
+	USER=$(logname)
+	COMPOSER_HOME="/home/$USER/.composer"
+	COMPOSER_VENDOR="$COMPOSER_HOME/vendor"
+	sudo -u $USER composer global require drupal/coder
+	sudo -u $USER $COMPOSER_VENDOR/bin/phpcs --config-set installed_paths \
+$COMPOSER_VENDOR/drupal/coder/coder_sniffer
+}
+
 # strictly speaking, not actually configuring nginx (see: add-site.sh) but rather setting
 # up the root 'www' directory with correct permissions and ensuring user is added to
 # 'www-data' group. It is important that 'package_install()' is run first or this will likely
@@ -52,6 +62,18 @@ nginx_config() {
 	echo "Setting $WEBROOT ownership to root:www-data and adding $SUDO_USER to www-data"
 	chown "root:www-data $WEBROOT"
 	usermod -a -G "www-data" $SUDO_USER
+}
+
+# On ubuntu, nodejs is installed as "nodejs" but gulp/sass will fail to install because
+# their install scripts expect to find "node". This will create a symlink if node does not
+# exist
+nodejs_config() {
+	NODEJS=$(which "nodejs")
+	if [ -f "/usr/bin/node" ] && [ ! $(which "node") ]; then
+		echo "'node' not found, creating symlink";
+		ln -s $NODEJS "/usr/bin/node";
+	fi
+	echo "'node' installed properly"
 }
 
 package_install() {
@@ -110,14 +132,17 @@ php_config() {
 
 case $1 in
 	"install") package_install ;;
-	"composer") install_composer ;;
+	"composer") composer_install;;
+	"composer-extra") composer_install_extra ;;
+	"nodejs") nodejs_config;;
 	"php") php_config ;;
 	"nginx") nginx_config ;;
 	"all")
-		package_install
+		package_install # MUST go first
 		nginx_config # must come after package_install
 		php_config
-		install_composer
+		composer_install; composer_install_extra
+		nodejs_config
 	;;
 	*) echo 'enter a command to execute or "all"' ;;
 esac
