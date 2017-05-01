@@ -1,153 +1,307 @@
-#!/bin/dash
+#!/bin/bash
 
-# Directories
-INSTALLDIR="/usr/local"
-BINDIR="$INSTALLDIR/bin"
-WEBROOT="/var/www"
+# TODO: detect which (if any) web server is running/installed (php_inst)
 
-# Package lists
-WEBSRV=`cat websrv.list`
-PHP=`cat php.list`
-DB=`cat db.list`
-EXTRA=`cat drupal.list`
-EXTRA="${EXTRA} `cat extra.list`"
-
-# Colors
-YLW="\033[0;33m"
-GRY="\033[0;37m"
-
-# check if program is installed and exit if not with error message
-require_prog() {
-	eval $1=`which $2`
-	if [ ! $1 ]; then
-		echo "$2 not installed. Use 'apt-get install $2' and run this program again";
-		exit 1
-	fi
+confirm_settings() {
+    echo
+    CHOICE="Y"
+    read -p "Would you like to go ahead with these settings [Y/n]? " CHOICE
+    case $CHOICE in
+        ""|"y"|"Y") return ;;
+        *) exit 0 ;;
+    esac
+    return
 }
 
-# Composer is a handy way to install Drupal. The fastest for a fairly bare-bones install
-# is using: '
-composer_install() {
-	require_prog WGET wget
-	require_prog PHP php
+# Composer (mainly D8, some D7)
 
-	echo "Installing composer..."
-	FILENAME="composer-setup.php"
-	$WGET -vO "$FILENAME" "http://getcomposer.org/installer"
-	$PHP "$FILENAME" --install-dir="/usr/local/bin" --filename="composer"
-	chmod 775 "/usr/local/bin/composer"
-	chown $USER:$USER /home/$USER/.composer
-	rm -f "$FILENAME"
-
-	echo -n "${YLW}INFO${GRY}: To install Drupal, run:"
-	echo -n "\$ composer create-project drupal-composer/drupal-project \<project_name\> "
-	echo "--stabilty=dev"
-	echo -n "${YLW}INFO${GRY}: alternatively, for a full commerce install, use the "
-	echo "'acromedia/drupalorange-project-template' project"
+composer_conf() {
+    return
 }
 
-composer_install_extra() {
-	# install the following php packages globally but not as root per composer warning
-	if [ ! -z $SUDO_USER ]; then
-		USER=$SUDO_USER
-	fi
-	COMPOSER_HOME="/home/$USER/.composer"
-	COMPOSER_VENDOR="$COMPOSER_HOME/vendor"
-	sudo -u $USER composer global require drupal/coder
-	sudo -u $USER $COMPOSER_VENDOR/bin/phpcs --config-set installed_paths \
-$COMPOSER_VENDOR/drupal/coder/coder_sniffer
+composer_setting() {
+    return
 }
 
-# strictly speaking, not actually configuring nginx (see: add-site.sh) but rather setting
-# up the root 'www' directory with correct permissions and ensuring user is added to
-# 'www-data' group. It is important that 'package_install()' is run first or this will likely
-# fail
-nginx_config() {
-	echo "Setting $WEBROOT ownership to root:www-data and adding $SUDO_USER to www-data"
-	#chown root:www-data $WEBROOT
-	#usermod -a -G "www-data" $SUDO_USER
+composer_inst() {
+    return
 }
 
-# On ubuntu, nodejs is installed as "nodejs" but gulp/sass will fail to install because
-# their install scripts expect to find "node". This will create a symlink if node does not
-# exist
-nodejs_config() {
-	require_prog NODEJS nodejs
-	if [ ! -e "/usr/bin/node" ] && [ ! -e "/usr/local/bin/node" ] && [ ! $(which "node") ]; then
-		echo "'node' not found, creating symlink";
-		ln -s $NODEJS "/usr/local/bin/node";
-	else
-		echo "'node' installed properly";
-	fi
+# Database server
+db_conf() {
+    DB="mariadb"
+    read -p "SQL Database [$DB]: " CHOICE
+    case $CHOICE in
+        ""|"mdb"|"maria"|"mariadb") DB="mariadb" ;;
+        "msql"|"mysql") DB="mysql" ;;
+        "postgre"|"postgresql") DB="postgresql" ;;
+        *)
+            echo -n "WARN: Unknown or invalid db choice; "
+            echo "Using default: $DB"
+            ;;
+    esac
+    return
 }
 
-nodejs_extra() {
-	require_prog NPM npm
-	$NPM install --global gulp-cli
-	$NPM install --global gulp
-	$NPM install --global gulp-sass
-	$NPM install --global gulp-autoprefixer
+db_inst() {
+    if [ -z "$DB" ] ; then db_conf ; fi
+    case $DB in
+        "mariadb")
+            apt install mariadb-client mariadb-server -y
+            ;;
+        "mysql")
+            apt install mysql-client mysql-server -y
+            ;;
+        "postgresql")
+            # TODO these might be wrong
+            apt install postgresql-client-common postgresql-common -y
+            ;;
+    esac
+    return
 }
 
-package_install() {
-	echo "Installing necessary packages..."
-	echo "apt udate"
-	apt-get update
-	echo "installing packages";
-	apt-get install $WEBSRV $DB $PHP $EXTRA
+db_setting() { echo "Database server: $DB" ; return ; }
+
+# DNS Masq
+dnsmasq_conf() {
+    DOMAIN="dev"
+    read -p "Local domain name (dev,localhost,example.net) [$DOMAIN]: " CHOICE
+    if [ ! -z $CHOICE ] ; then DOMAIN=$CHOICE; fi
+     
+    ADDRESS="127.0.0.1"
+    read -p "Local address [$ADDRESS]: " CHOICE
+    if [ ! -z $CHOICE ] ; then ADDRESS=$CHOICE; fi
+
+    return
 }
 
-php_config() {
-	require_prog GREP grep
-	require_prog SED sed
+dnsmasq_inst() {
+    apt install dnsmasq -y
+    grep "$DOMAIN" /etc/dnsmasq.conf
+    if [ $? -eq 1 ] ; then
+        echo >> /etc/dnsmasq.conf
+        echo "# added by packager/dnsmasq script" >> /etc/dnsmasq.conf
+        echo "address=/$DOMAIN/$ADDRESS" >> /etc/dnsmasq.conf ;
+    fi
 
-	echo "Configuring PHP"
-	PHPINI="/etc/php/7.0/fpm/php.ini"
-	if [ ! -f "$PHPINI" ]; then
-		echo "couldn't find php.ini"
-		exit 2
-	fi
-
-	#backup php.ini
-	echo "..backing up php.ini"
-	cp -v $PHPINI $PHPINI.bak
-	$SED -i "s/max_execution_time \= [0-9]*$/max_execution_time \= 300/" $PHPINI
-	$SED -i "s/memory_limit \= [0-9]*M$/memory_limit \= 128M/" $PHPINI
-	echo "..set: $($GREP 'max_execution_time =' $PHPINI)"
-	echo "..set: $($GREP 'memory_limit =' $PHPINI)"
-
-	XDEBUG="/etc/php/7.0/fpm/conf.d/20-xdebug.ini" 
-	if [ -f $XDEBUG ]; then
-		echo "Configuring xdebug.ini..."
-		if [ $(grep "remote_enable" $XDEBUG) ]; then
-			echo "xdebug already configured, skipping"
-		else
-			echo "..backing up $XDEBUG"
-			cp -f $XDEBUG $XDEBUG.bak
-			echo "xdebug.remote_enable=1" >> $XDEBUG
-			echo "xdebug.remote_host=localhost" >> $XDEBUG
-			echo "xdebug.remote_port=9000" >> $XDEBUG
-		fi
-	else
-		echo "xdebug.ini not found, skipping"
-	fi
+    # check if /etc/resolve.conf has the correct settings
+    grep "generated" /etc/resolv.conf > /dev/null
+    if [ $? -eq 1 ]; then echo "nameserver $ADDRESS" >> /etc/resolve.conf ; fi
+     
+    return
 }
 
+dnsmasq_setting() {
+    echo "Local domain: *.$DOMAIN"
+    echo "Local IP: $ADDRESS"
+    return
+}
+
+php_conf() {
+    PHPDB=$DB
+    PHPMEM="128"
+    PHPTIME="240"
+    PHPVER=""
+    read -p "PHP Version to install [$PHPVER]: " CHOICE
+    case $CHOICE in
+        "") ;;
+        "5"|"5.6") PHPVER="5.6" ;;
+        "7"|"7.0") PHPVER="7.0" ;;
+        "7.1") PHPVER="7.1" ;;
+        *)
+            PHPVER=""
+            echo -n "WARN Invalid PHP versio \"$CHOICE\"n;"
+            echo "installing system default"
+            ;;
+    esac
+    if [ $DB = "mariadb" ] ; then PHPDB="mysql" ; fi
+
+    read -p "PHP max execution timeout [$PHPTIME]: " CHOICE
+    # TODO needs validation
+    if [ ! -z $CHOICE ] ; then
+        $PHPTIME=$CHOICE
+    fi
+
+    read -p "PHP memory limit (in megabytes) [$PHPMEM]: " CHOICE
+    # TODO needs validation
+    if [ ! -z $CHOICE ] ; then
+        $PHPMEM=$CHOICE
+    fi
+
+    return
+}
+
+php_inst() {
+    case $PHPVER in
+        "5.6"|"7.1")
+            add-apt-repository ppa:ondrej/php
+            apt-get update
+            ;;
+    esac
+    apt install php${PHPVER} php${PHPVER}-bcmath php${PHPVER}-curl php-date \
+        php${PHPVER}-gd php${PHPVER}-json php${PHPVER}-mbstring \
+        php${PHPVER}-${PHPDB} php-ssh2 php-xdebug php${PHPVER}-xml \
+        php${PHPVER}-zip -y
+
+    INI="/etc/php/${PHPVER}/fpm/php.ini"
+    if [ ! -f $INI ] ; then
+        echo "WARN: failed to find php.ini, make sure you make these chanages \
+        manually"
+        echo "max_execution_time==${PHPTIME}"
+        echo "memory_limit=${PHPMEM}"
+        return
+    fi
+    sed -i "s/max_execution_time \= [0-9]*$/max_execution_time \= ${PHPTIME}/" $INI
+    sed -i "s/memory_limit \= [0-9]+M$/memory_limit \= ${PHPMEM}M/" $INI
+    return
+}
+
+php_setting() {
+    if [ -z "$PHPVER" ] ; then VER="default" ; else VER=$PHPVER ; fi
+    echo "PHP version: $VER"
+    echo "PHP database module: php${PHPVER}-${PHPDB}"
+    echo "PHP max execution time: $PHPTIME"
+    echo "PHP memory limit: ${PHPMEM}M"
+    return
+}
+
+# Sass, Gulp and Nodejs
+sass_conf() {
+    return
+}
+
+sass_setting() {
+    return
+}
+
+sass_inst() {
+    return
+}
+
+# Web Server
+websrv_conf() {
+    WEBSRV="apache2"
+    read -p "Web server to configure PHP for [$WEBSRV]:" CHOICE
+    case $CHOICE in 
+        ""|"ap"|"apache"|"apache2") WEBSRV="apache2" ;;
+        "ng"|"ngx"|"nginx") WEBSRV="nginx" ;;
+        *)
+            echo "WARN: Invalid or unknown web server \"$CHOICE\"!"
+            echo "Using default: \"$WEBSRV\""
+            ;;
+    esac
+    return
+}
+
+websrv_inst() {
+    if [ -z $WEBSRV ] ; then websrv_conf ; fi 
+    read -p "Web server to install (apache2 or nginx) [$WEBSRV]:" CHOICE 
+    case $CHOICE in "apache2"|"nginx") WEBSRV=$CHOICE;; esac 
+ 
+    apt install $WEBSRV -y
+	 
+    case $WEBSRV in 
+        "apache2") 
+            a2enmod rewrite > /dev/null 
+            echo "Restarting apache2 service..." 
+            service apache2 restart 
+            ;; 
+        "nginx") 
+            ;; 
+    esac
+    return
+}
+
+websrv_setting() { echo "Web server: $WEBSRV" ; return ; }
+
+# main entrypoint
 case $1 in
-	"install") package_install ;;
-	"composer") composer_install;;
-	"composer-extra") composer_install_extra ;;
-	"node") nodejs_config;;
-	"node-extra") nodejs_extra;;
-	"php") php_config ;;
-	"nginx") nginx_config ;;
-	"all")
-		package_install # MUST go first
-		nginx_config # must come after package_install
-		php_config # keep this third
-		composer_install; composer_install_extra
-		nodejs_config; nodejs-extra
-	;;
-	*) echo 'enter a command to execute or "all"' ;;
+    "apache2"|"nginx"|"websrv")
+        echo "Configuring Web server..."
+        websrv_conf
+        echo
+        echo "Settings:"
+        websrv_setting
+        confirm_settings
+        websrv_inst
+        ;;
+    "composer")
+        echo "Configuring composer..."
+        composer_conf
+        echo
+        echo "Settings:"
+        composer_setting
+        confirm_settings
+        composer_inst
+        ;;
+    "db"|"sql")
+        echo "Configuring database..."
+        db_conf
+        echo
+        echo "Settings:"
+        db_setting
+        confirm_settings
+        db_ins
+        ;;
+    "dnsmasq")
+        echo "Configuring PHP..."
+        dnsmasq_conf
+        echo
+        echo "Settings:"
+        dnsmasq_setting
+        confirm_settings
+        dnsmasq_inst
+        ;;
+    "php")
+        echo "Configuring PHP..."
+        if [ -z "$DB" ] ; then db_conf ; fi
+        php_conf
+        echo
+        echo "Settings:"
+        php_setting
+        confirm_settings
+        php_inst
+        ;;
+    "sass"|"gulp")
+        echo "Configuring composer..."
+        sass_conf
+        echo
+        echo "Settings:"
+        sass_setting
+        confirm_settings
+        sass_inst
+        ;;
+    "all")
+        websrv_conf
+        db_conf
+        php_conf
+        composer_conf
+        sass_conf
+        dnsmasq_conf
+        echo
+        echo "Settings:"
+        websrv_setting
+        db_setting
+        php_setting
+        composer_setting
+        sass_setting
+        dnsmasq_setting
+        confirm_settings
+        websrv_inst
+        db_inst
+        php_inst
+        composer_inst
+        sass_inst
+        dnsmasq_inst
+        ;;
+    *)
+	# print usage and exit with error code
+        echo "unknown option: \"$1\"; available options are:"
+        echo "  db | sql"
+        echo "  dnsmasq"
+        echo "  php"
+        echo "  websrv|apache2|nginx"
+        echo "  all"
+	exit 1
+        ;;
 esac
-
