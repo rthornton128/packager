@@ -1,6 +1,21 @@
 #!/bin/bash
 
-# TODO: detect which (if any) web server is running/installed (php_inst)
+if [ -z "$(uname -a | grep '[Uu]buntu')" ] ; then
+    echo "WARN: this script is intended to only run on Ubuntu and friends"
+    read -p "Press any key to continue..." -n 1
+fi
+
+# attempt to detect a running web server
+WEBSRV=$(dpkg -l | grep -o -m 1 'nginx')
+if [ -z $WEBSRV ] ; then WEBSRV=$(dpkg -l | grep -o -m 1 'apache2\?') ; fi
+
+# attempt to detect existing php
+PHPVER=$(readlink -f $(which php) | grep -o '[0-9].[0-9]')
+
+# attempt to detect existing database
+DB=$(dpkg -l | grep -o -m 1 'mariadb')
+if [ -z $DB ] ; then DB=$(dpkg -l | grep -o -m 1 'mysql') ; fi
+if [ -z $DB ] ; then DB=$(dpkg -l | grep -o -m 1 'pgsql') ; fi
 
 confirm_settings() {
     echo
@@ -16,20 +31,40 @@ confirm_settings() {
 # Composer (mainly D8, some D7)
 
 composer_conf() {
+    if [ -z "$(which php)" ] ; then
+        echo "PHP not found"
+        exit 1
+    fi
+    COMPDIR="/usr/local/bin"
+    read -p "Composer install directory [$COMPDIR]: " CHOICE
+    if [ ! -z $CHOICE ] ; then COMPDIR=$CHOICE ; fi
     return
 }
 
 composer_setting() {
+    echo "Composer install dir: $COMPDIR"
     return
 }
 
 composer_inst() {
+    EXPECT=$(wget -q -O - https://composer.github.io/installer.sig)
+    php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    SIG=$(php -r "echo hash_file('SHA384', 'composer-setup.php');")
+
+    if [ "$EXPECT" != "$SIG" ] ; then
+        >&2 echo "ERROR: Invalid installer signature"
+        rm composer-setup.php
+        exit 1
+    fi
+
+    php composer-setup.php --quiet --install-dir=$COMPDIR --filename="composer"
+    rm composer-setup.php
     return
 }
 
 # Database server
 db_conf() {
-    DB="mariadb"
+    if [ -z $DB ] ; then DB="mariadb" ; fi
     read -p "SQL Database [$DB]: " CHOICE
     case $CHOICE in
         ""|"mdb"|"maria"|"mariadb") DB="mariadb" ;;
@@ -101,7 +136,6 @@ php_conf() {
     PHPDB=$DB
     PHPMEM="128"
     PHPTIME="240"
-    PHPVER=""
     read -p "PHP Version to install [$PHPVER]: " CHOICE
     case $CHOICE in
         "") ;;
@@ -143,6 +177,11 @@ php_inst() {
         php${PHPVER}-${PHPDB} php-ssh2 php-xdebug php${PHPVER}-xml \
         php${PHPVER}-zip -y
 
+    # must know actual installed PHP version
+    if [ -z $PHPVER ] ; then
+        PHPVER=$(readlink -f $(which php) | grep -o '[0-9].[0-9]')
+    fi
+
     INI="/etc/php/${PHPVER}/fpm/php.ini"
     if [ ! -f $INI ] ; then
         echo "WARN: failed to find php.ini, make sure you make these chanages \
@@ -153,6 +192,14 @@ php_inst() {
     fi
     sed -i "s/max_execution_time \= [0-9]*$/max_execution_time \= ${PHPTIME}/" $INI
     sed -i "s/memory_limit \= [0-9]+M$/memory_limit \= ${PHPMEM}M/" $INI
+
+    XDEBUG="/etc/php/${PHPVER}/fpm/conf.d/20-xdebug.ini" 
+    if [ -f $XDEBUG ] && [ ! -z "$(grep 'remote_enable' $XDEBUG)" ] ; then
+        cp -f $XDEBUG $XDEBUG.bak
+        echo "xdebug.remote_enable=1" >> $XDEBUG
+        echo "xdebug.remote_host=localhost" >> $XDEBUG
+        echo "xdebug.remote_port=9000" >> $XDEBUG
+    fi
     return
 }
 
@@ -175,12 +222,21 @@ sass_setting() {
 }
 
 sass_inst() {
+    apt install ruby nodejs npm -y
+    # correct directory issue that can mess up gulp install
+    NODE=$(readlink -f $(which "nodejs"))
+    TARG="/usr/local/bin/node"
+    if [ ! -e "$TARG" ] && [ ! -z "$NODE" ] ; then
+        ln -s $NODE $TARG ;
+    fi
+    gem install sass
+    npm install --global gulp gulp-cli gulp-sass gulp-autoprefixer
     return
 }
 
 # Web Server
 websrv_conf() {
-    WEBSRV="apache2"
+    if [ -z $WEBSRV ] ; then WEBSRV="apache2" ; fi
     read -p "Web server to configure PHP for [$WEBSRV]:" CHOICE
     case $CHOICE in 
         ""|"ap"|"apache"|"apache2") WEBSRV="apache2" ;;
@@ -194,7 +250,6 @@ websrv_conf() {
 }
 
 websrv_inst() {
-    if [ -z $WEBSRV ] ; then websrv_conf ; fi 
     read -p "Web server to install (apache2 or nginx) [$WEBSRV]:" CHOICE 
     case $CHOICE in "apache2"|"nginx") WEBSRV=$CHOICE;; esac 
  
@@ -263,7 +318,7 @@ case $1 in
         php_inst
         ;;
     "sass"|"gulp")
-        echo "Configuring composer..."
+        echo "Configuring Sass and Gulp..."
         sass_conf
         echo
         echo "Settings:"
