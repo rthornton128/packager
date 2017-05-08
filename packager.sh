@@ -59,6 +59,10 @@ composer_inst() {
 
     php composer-setup.php --quiet --install-dir=$COMPDIR --filename="composer"
     rm composer-setup.php
+    $(sudo -u $USER composer global require drush/drush)
+    if [ -z "$(grep composer $HOME/.composer/vender/bin)" ] ; then
+        echo 'PATH="$HOME/.composer/vendor/bin:$PATH"' >> $HOME/.profile
+    fi
     return
 }
 
@@ -75,6 +79,13 @@ db_conf() {
             echo "Using default: $DB"
             ;;
     esac
+    if [ "$DBUSER" ] ; then DBUSER=acro ; fi
+    read -p "Database user [$DBUSER]: " choice
+    if [ "$choice" ] ; then DBUSER=$choice ; fi
+
+    read -p "Database password [$DBPASS]: " choice
+    if [ "$choice" ] ; then DBPASS=$choice ; fi
+
     return
 }
 
@@ -83,6 +94,11 @@ db_inst() {
     case $DB in
         "mariadb")
             apt install mariadb-client mariadb-server -y
+            STATEMENT="CREATE USER '$DBUSER'@'localhost'"
+            if [ "$DBPASS" ] ; then
+                STATEMENT="$STATEMENT IDENTIFIED BY '$DBPASS'"
+            fi
+            mysql -ve "$STATEMENT;"
             ;;
         "mysql")
             apt install mysql-client mysql-server -y
@@ -95,7 +111,12 @@ db_inst() {
     return
 }
 
-db_setting() { echo "Database server: $DB" ; return ; }
+db_setting() {
+    echo "Database server: $DB"
+    echo "Database user: $DBUSER"
+    echo "Database password: $DBPASS"
+    return
+}
 
 # DNS Masq
 dnsmasq_conf() {
@@ -173,9 +194,9 @@ php_inst() {
             ;;
     esac
     apt install php${PHPVER} php${PHPVER}-bcmath php${PHPVER}-curl php-date \
-        php${PHPVER}-gd php${PHPVER}-json php${PHPVER}-mbstring \
-        php${PHPVER}-${PHPDB} php-ssh2 php-xdebug php${PHPVER}-xml \
-        php${PHPVER}-zip -y
+        php${PHPVER}-fpm php${PHPVER}-gd php${PHPVER}-json \
+        php${PHPVER}-mbstring php${PHPVER}-${PHPDB} php-ssh2 \
+        php-uploadprogress php-xdebug php${PHPVER}-xml php${PHPVER}-zip -y
 
     # must know actual installed PHP version
     if [ -z $PHPVER ] ; then
@@ -257,7 +278,9 @@ websrv_inst() {
 	 
     case $WEBSRV in 
         "apache2") 
-            a2enmod rewrite > /dev/null 
+            a2enmod rewrite > /dev/null
+            a2enmod proxy_fcgi
+            a2enconf php7.0-fpm
             echo "Restarting apache2 service..." 
             service apache2 restart 
             ;; 
@@ -296,7 +319,7 @@ case $1 in
         echo "Settings:"
         db_setting
         confirm_settings
-        db_ins
+        db_inst
         ;;
     "dnsmasq")
         echo "Configuring PHP..."
